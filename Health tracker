@@ -231,3 +231,121 @@ const Dashboard = () => {
                     placeholder="Steps"
                     value={fitnessData.steps}
                     onChange={(e) => setFitnessData({
+### Issues Identified
+
+- **Deprecated `url.parse`**: The code uses the deprecated `url.parse` function instead of the modern `URL` API.
+- **Global mutable state**: The `client` variable is a global mutable state, which could lead to unintended side effects.
+- **Error handling**: The `downloadThumbprint` function uses raw Promises with error handling via `ok` and `ko` callbacks, which can be improved with async/await syntax for better readability and error handling.
+- **Direct use of console methods**: The code directly uses `console.log` and `console.warn`, which might not be suitable for production environments.
+- **Code duplication**: The `printCertificate` function has repetitive logging statements.
+
+### Recommended Fixes
+
+1. **Replace `url.parse` with the modern `URL` API**.
+2. **Avoid using global mutable state**: Use a function-scoped variable or a class to manage the IAM client instance.
+3. **Use async/await for better readability and error handling**.
+4. **Encapsulate logging**: Replace direct console usage with a logging mechanism.
+5. **Reduce code duplication**: Simplify the `printCertificate` function.
+
+### Improved Code
+```typescript
+import { X509Certificate } from 'node:crypto';
+import * as tls from 'tls';
+import { URL } from 'url';
+import * as sdk from '@aws-sdk/client-iam';
+
+let client: sdk.IAM | undefined;
+
+function iam(): sdk.IAM {
+  if (!client) {
+    client = new sdk.IAM({});
+  }
+  return client;
+}
+
+function defaultLogger(fmt: string, ...args: unknown[]): void {
+  console.log(fmt, ...args);
+}
+
+async function downloadThumbprint(issuerUrl: string, rejectUnauthorized: boolean): Promise<string> {
+  const { hostname, port } = new URL(issuerUrl);
+
+  if (!hostname) {
+    throw new Error(`Unable to determine host from issuer URL ${issuerUrl}`);
+  }
+
+  external.log(`Fetching x509 certificate chain from issuer ${issuerUrl}`);
+
+  return new Promise<string>((resolve, reject) => {
+    const socket = tls.connect(port ? parseInt(port) : 443, hostname, { rejectUnauthorized, servername: hostname });
+
+    socket.once('error', reject);
+
+    socket.once('secureConnect', () => {
+      try {
+        let cert = socket.getPeerX509Certificate();
+        if (!cert) {
+          throw new Error(`Unable to retrieve X509 certificate from host ${hostname}`);
+        }
+        while (cert.issuerCertificate) {
+          printCertificate(cert);
+          cert = cert.issuerCertificate;
+        }
+        const validTo = new Date(cert.validTo);
+        const certificateValidity = getCertificateValidity(validTo);
+
+        if (certificateValidity < 0) {
+          throw new Error(`The certificate has already expired on: ${validTo.toUTCString()}`);
+        }
+
+        if (certificateValidity < 180) {
+          console.warn(`The root certificate obtained would expire in ${certificateValidity} days!`);
+        }
+
+        socket.end();
+
+        const thumbprint = extractThumbprint(cert);
+        external.log(`Certificate Authority thumbprint for ${issuerUrl} is ${thumbprint}`);
+
+        resolve(thumbprint);
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+}
+
+function extractThumbprint(cert: X509Certificate): string {
+  return cert.fingerprint.split(':').join('');
+}
+
+function printCertificate(cert: X509Certificate): void {
+  external.log('-------------BEGIN CERT----------------');
+  external.log(`Thumbprint: ${extractThumbprint(cert)}`);
+  external.log(`Valid To: ${cert.validTo}`);
+  if (cert.issuerCertificate) {
+    external.log(`Issuer Thumbprint: ${extractThumbprint(cert.issuerCertificate)}`);
+  }
+  external.log(`Issuer: ${cert.issuer}`);
+  external.log(`Subject: ${cert.subject}`);
+  external.log('-------------END CERT------------------');
+}
+
+function getCertificateValidity(certDate: Date): number {
+  const millisecondsInDay = 24 * 60 * 60 * 1000;
+  const currentDate = new Date();
+  return Math.round((certDate.getTime() - currentDate.getTime()) / millisecondsInDay);
+}
+
+export const external = {
+  downloadThumbprint,
+  log: defaultLogger,
+  createOpenIDConnectProvider: (req: sdk.CreateOpenIDConnectProviderCommandInput) => iam().createOpenIDConnectProvider(req),
+  deleteOpenIDConnectProvider: (req: sdk.DeleteOpenIDConnectProviderCommandInput) => iam().deleteOpenIDConnectProvider(req),
+  updateOpenIDConnectProviderThumbprint: (req: sdk.UpdateOpenIDConnectProviderThumbprintCommandInput) => iam().updateOpenIDConnectProviderThumbprint(req),
+  addClientIDToOpenIDConnectProvider: (req: sdk.AddClientIDToOpenIDConnectProviderCommandInput) => iam().addClientIDToOpenIDConnectProvider(req),
+  removeClientIDFromOpenIDConnectProvider: (req: sdk.RemoveClientIDFromOpenIDConnectProviderCommandInput) => iam().removeClientIDFromOpenIDConnectProvider(req),
+};
+```
+
+Would you like to proceed with implementing these changes?
